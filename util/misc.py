@@ -304,3 +304,36 @@ def inverse_sigmoid(x, eps=1e-5):
     x1 = x.clamp(min=eps)
     x2 = (1 - x).clamp(min=eps)
     return torch.log(x1 / x2)
+# ------------------------------------------------------------------------
+# Init distributed mode (required by main.py)
+# ------------------------------------------------------------------------
+
+def init_distributed_mode(args):
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        args.rank = int(os.environ["RANK"])
+        args.world_size = int(os.environ["WORLD_SIZE"])
+        args.gpu = int(os.environ["LOCAL_RANK"])
+    else:
+        print("Not using distributed mode")
+        args.distributed = False
+        args.rank = 0
+        args.world_size = 1
+        args.gpu = 0
+        return
+
+    args.distributed = True
+
+    torch.cuda.set_device(args.gpu)
+    args.dist_backend = "nccl"
+    print(
+        f"| distributed init (rank {args.rank}): {args.dist_url}",
+        flush=True,
+    )
+
+    dist.init_process_group(
+        backend=args.dist_backend,
+        init_method=args.dist_url,
+        world_size=args.world_size,
+        rank=args.rank,
+    )
+    dist.barrier()
