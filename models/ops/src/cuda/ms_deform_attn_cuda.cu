@@ -62,13 +62,15 @@ at::Tensor ms_deform_attn_cuda_forward(
     {
         auto columns = output_n.select(0, n);
         AT_DISPATCH_FLOATING_TYPES(value.scalar_type(), "ms_deform_attn_forward_cuda", ([&] {
-            ms_deformable_im2col_cuda(at::cuda::getCurrentCUDAStream(),
-                value.data_ptr<scalar_t>()
-                spatial_shapes.data_ptr<int64_t>()
-                level_start_index.data_ptr<int64_t>()
-                sampling_loc.data_ptr<scalar_t>()
-                attn_weight.data_ptr<scalar_t>()
+            ms_deformable_im2col_cuda(
+                at::cuda::getCurrentCUDAStream(),
+                value.data_ptr<scalar_t>(),
+                spatial_shapes.data_ptr<int64_t>(),
+                level_start_index.data_ptr<int64_t>(),
+                sampling_loc.data_ptr<scalar_t>(),
+                attn_weight.data_ptr<scalar_t>(),
                 columns.data_ptr<scalar_t>()
+        );
 
         }));
     }
@@ -131,16 +133,18 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     {
         auto grad_output_g = grad_output_n.select(0, n);
         AT_DISPATCH_FLOATING_TYPES(value.scalar_type(), "ms_deform_attn_backward_cuda", ([&] {
-            ms_deformable_col2im_cuda(at::cuda::getCurrentCUDAStream(),
-                                    grad_output_g.data_ptr<scalar_t>()
-                                    value.data_ptr<scalar_t>()
-                                    spatial_shapes.data_ptr<int64_t>()
-                                    level_start_index.data_ptr<int64_t>()
-                                    sampling_loc.data_ptr<scalar_t>()
-                                    attn_weight.data_ptr<scalar_t>()
-                                    grad_value.data_ptr<scalar_t>()
-                                    grad_sampling_loc.data_ptr<scalar_t>()
-                                    grad_attn_weight.data_ptr<scalar_t>()
+            ms_deformable_col2im_cuda(
+                at::cuda::getCurrentCUDAStream(),
+                grad_output_g.data_ptr<scalar_t>(),
+                value.data_ptr<scalar_t>(),
+                spatial_shapes.data_ptr<int64_t>(),
+                level_start_index.data_ptr<int64_t>(),
+                sampling_loc.data_ptr<scalar_t>(),
+                attn_weight.data_ptr<scalar_t>(),
+                grad_value.data_ptr<scalar_t>(),
+                grad_sampling_loc.data_ptr<scalar_t>(),
+                grad_attn_weight.data_ptr<scalar_t>()
+            );
 
         }));
     }
