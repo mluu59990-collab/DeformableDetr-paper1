@@ -40,7 +40,7 @@ def get_args_parser():
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
-
+    parser.add_argument('--num_classes', default=1, type=int)
 
     parser.add_argument('--sgd', action='store_true')
 
