@@ -351,3 +351,11 @@ def get_sha():
         return sha
     except Exception:
         return "N/A"
+# ------------------------------------------------------------------------
+# Collate function (for DataLoader)
+# ------------------------------------------------------------------------
+
+def collate_fn(batch):
+    batch = list(zip(*batch))
+    batch[0] = nested_tensor_from_tensor_list(batch[0])
+    return tuple(batch)
