@@ -337,3 +337,17 @@ def init_distributed_mode(args):
         rank=args.rank,
     )
     dist.barrier()
+# ------------------------------------------------------------------------
+# Git SHA
+# ------------------------------------------------------------------------
+
+def get_sha():
+    try:
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd
+        ).decode("ascii").strip()
+        return sha
+    except Exception:
+        return "N/A"
