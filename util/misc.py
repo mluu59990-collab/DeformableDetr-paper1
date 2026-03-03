@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Cleaned misc.py for modern PyTorch (2.x) and torchvision (0.15+)
-# Compatible with Kaggle / Python 3.12
+# Deformable DETR - Fully compatible misc.py for PyTorch 2.x
+# Keeps full original functionality
 # ------------------------------------------------------------------------
 
 import os
@@ -16,6 +16,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch import Tensor
 import torch.nn.functional as F
+import torchvision
 
 
 # ------------------------------------------------------------------------
@@ -39,7 +40,8 @@ class SmoothedValue(object):
     def synchronize_between_processes(self):
         if not is_dist_avail_and_initialized():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device="cuda")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
         dist.barrier()
         dist.all_reduce(t)
         self.count = int(t[0])
@@ -76,7 +78,7 @@ class SmoothedValue(object):
 
 
 # ------------------------------------------------------------------------
-# Distributed helpers
+# Distributed utilities
 # ------------------------------------------------------------------------
 
 def is_dist_avail_and_initialized():
@@ -91,6 +93,18 @@ def get_rank():
     return dist.get_rank() if is_dist_avail_and_initialized() else 0
 
 
+def get_local_size():
+    if not is_dist_avail_and_initialized():
+        return 1
+    return int(os.environ.get("LOCAL_SIZE", 1))
+
+
+def get_local_rank():
+    if not is_dist_avail_and_initialized():
+        return 0
+    return int(os.environ.get("LOCAL_RANK", 0))
+
+
 def is_main_process():
     return get_rank() == 0
 
@@ -98,6 +112,72 @@ def is_main_process():
 def save_on_master(*args, **kwargs):
     if is_main_process():
         torch.save(*args, **kwargs)
+
+
+# ------------------------------------------------------------------------
+# All gather
+# ------------------------------------------------------------------------
+
+def all_gather(data):
+    world_size = get_world_size()
+    if world_size == 1:
+        return [data]
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    buffer = pickle.dumps(data)
+    storage = torch.ByteStorage.from_buffer(buffer)
+    tensor = torch.ByteTensor(storage).to(device)
+
+    local_size = torch.tensor([tensor.numel()], device=device)
+    size_list = [torch.tensor([0], device=device) for _ in range(world_size)]
+    dist.all_gather(size_list, local_size)
+    size_list = [int(size.item()) for size in size_list]
+    max_size = max(size_list)
+
+    tensor_list = [
+        torch.empty((max_size,), dtype=torch.uint8, device=device)
+        for _ in size_list
+    ]
+
+    if tensor.numel() != max_size:
+        padding = torch.empty((max_size - tensor.numel(),),
+                              dtype=torch.uint8, device=device)
+        tensor = torch.cat((tensor, padding), dim=0)
+
+    dist.all_gather(tensor_list, tensor)
+
+    data_list = []
+    for size, tensor in zip(size_list, tensor_list):
+        buffer = tensor.cpu().numpy().tobytes()[:size]
+        data_list.append(pickle.loads(buffer))
+
+    return data_list
+
+
+# ------------------------------------------------------------------------
+# Reduce dict
+# ------------------------------------------------------------------------
+
+def reduce_dict(input_dict, average=True):
+    world_size = get_world_size()
+    if world_size < 2:
+        return input_dict
+
+    with torch.no_grad():
+        names = []
+        values = []
+        for k in sorted(input_dict.keys()):
+            names.append(k)
+            values.append(input_dict[k])
+
+        values = torch.stack(values, dim=0)
+        dist.all_reduce(values)
+
+        if average:
+            values /= world_size
+
+        return {k: v for k, v in zip(names, values)}
 
 
 # ------------------------------------------------------------------------
@@ -110,9 +190,14 @@ class NestedTensor(object):
         self.mask = mask
 
     def to(self, device, non_blocking=False):
-        cast_tensor = self.tensors.to(device, non_blocking=non_blocking)
-        cast_mask = self.mask.to(device, non_blocking=non_blocking) if self.mask is not None else None
-        return NestedTensor(cast_tensor, cast_mask)
+        tensors = self.tensors.to(device, non_blocking=non_blocking)
+        mask = self.mask.to(device, non_blocking=non_blocking) if self.mask is not None else None
+        return NestedTensor(tensors, mask)
+
+    def record_stream(self, *args, **kwargs):
+        self.tensors.record_stream(*args, **kwargs)
+        if self.mask is not None:
+            self.mask.record_stream(*args, **kwargs)
 
     def decompose(self):
         return self.tensors, self.mask
@@ -121,14 +206,22 @@ class NestedTensor(object):
         return str(self.tensors)
 
 
+def _max_by_axis(the_list):
+    maxes = the_list[0]
+    for sublist in the_list[1:]:
+        for i, item in enumerate(sublist):
+            maxes[i] = max(maxes[i], item)
+    return maxes
+
+
 def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
     if tensor_list[0].ndim != 3:
         raise ValueError("Only 3D tensors supported")
 
-    max_size = [max(s) for s in zip(*[img.shape for img in tensor_list])]
+    max_size = _max_by_axis([list(img.shape) for img in tensor_list])
     batch_shape = [len(tensor_list)] + max_size
-    b, c, h, w = batch_shape
 
+    b, c, h, w = batch_shape
     dtype = tensor_list[0].dtype
     device = tensor_list[0].device
 
@@ -136,14 +229,14 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
     mask = torch.ones((b, h, w), dtype=torch.bool, device=device)
 
     for img, pad_img, m in zip(tensor_list, tensor, mask):
-        pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
-        m[: img.shape[1], : img.shape[2]] = False
+        pad_img[:img.shape[0], :img.shape[1], :img.shape[2]].copy_(img)
+        m[:img.shape[1], :img.shape[2]] = False
 
     return NestedTensor(tensor, mask)
 
 
 # ------------------------------------------------------------------------
-# Interpolate (clean version)
+# Interpolate (modern safe)
 # ------------------------------------------------------------------------
 
 def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corners=None):
@@ -152,7 +245,7 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
         size=size,
         scale_factor=scale_factor,
         mode=mode,
-        align_corners=align_corners,
+        align_corners=align_corners
     )
 
 
@@ -176,21 +269,22 @@ def accuracy(output, target, topk=(1,)):
     for k in topk:
         correct_k = correct[:k].reshape(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
+
     return res
 
 
 # ------------------------------------------------------------------------
-# Gradient norm
+# Grad norm
 # ------------------------------------------------------------------------
 
 def get_total_grad_norm(parameters, norm_type=2):
     parameters = [p for p in parameters if p.grad is not None]
-    norm_type = float(norm_type)
-
     if len(parameters) == 0:
         return torch.tensor(0.)
 
+    norm_type = float(norm_type)
     device = parameters[0].grad.device
+
     total_norm = torch.norm(
         torch.stack([
             torch.norm(p.grad.detach(), norm_type).to(device)
@@ -206,7 +300,7 @@ def get_total_grad_norm(parameters, norm_type=2):
 # ------------------------------------------------------------------------
 
 def inverse_sigmoid(x, eps=1e-5):
-    x = x.clamp(min=0, max=1)
+    x = x.clamp(0, 1)
     x1 = x.clamp(min=eps)
     x2 = (1 - x).clamp(min=eps)
     return torch.log(x1 / x2)
