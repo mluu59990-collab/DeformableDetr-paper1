@@ -75,11 +75,10 @@ class BackboneBase(nn.Module):
             return_layers = {"layer2": "0", "layer3": "1", "layer4": "2"}
             self.strides = [8, 16, 32]
 
-            if backbone.__class__.__name__ in ["ResNet"]:
-                if backbone.layer4[-1].conv1.in_channels == 256:  # resnet18/34
-                    self.num_channels = [128, 256, 512]
-                else:  # resnet50+
-                    self.num_channels = [512, 1024, 2048]
+            if name in ["resnet18", "resnet34"]:
+                self.num_channels = [128, 256, 512]
+            else:
+                self.num_channels = [512, 1024, 2048]
         else:
             return_layers = {'layer4': "0"}
             self.strides = [32]
